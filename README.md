@@ -2,7 +2,7 @@
 
 Reverse-engineered video renderer proxy for **DARK (2013)**.
 
-Project fixes WMV cutscene playback on Proton/Linux. Original game video layer may freeze after a few seconds while audio, subtitles, cancel button, and loading flow still work. This proxy keeps original game timing/audio/UI, but replaces only video texture upload with frames decoded by 32-bit Windows FFmpeg.
+Project fixes WMV cutscene playback on Proton/Linux. Original game video layer may freeze after a few seconds while audio, subtitles, cancel button, and loading flow still work. This proxy keeps original game UI/timing where possible, replaces video texture upload with frames decoded by 32-bit Windows FFmpeg, and plays extracted cutscene audio through FFplay.
 
 Game links:
 
@@ -13,8 +13,9 @@ Game links:
 
 - Replaces `VideoEnginePlugin.vPlugin` with proxy DLL.
 - Loads original plugin as `VideoEnginePlugin.orig.vPlugin`.
-- Lets original plugin keep audio, subtitles, timing, skip/cancel button, and level transitions.
+- Lets original plugin keep subtitles, timing, skip/cancel button, and level transitions.
 - Starts `ffmpeg\bin\ffmpeg.exe` to decode current `.wmv` into BGRA rawvideo.
+- Starts `ffmpeg\bin\ffplay.exe` for extracted `.wav` audio placed next to each cutscene `.wmv`.
 - Uploads decoded frames into game texture through `VTextureObject::UpdateRect`.
 - Handles Alt+Enter/device reset using exported `vBase100.dll` reset flags.
 - Runs FFmpeg with low priority/single-thread mode to avoid audio stutter.
@@ -37,7 +38,7 @@ Working on Proton-GE with Russian localized DARK install.
 
 Known design:
 
-- Audio still comes from original DirectShow/Wine path.
+- Cutscene audio is extracted to `.wav` files beside the original `.wmv` files and played through FFplay to avoid Proton/Wine DirectShow audio stalls.
 - Video comes from FFmpeg texture hook.
 - FFmpeg must be 32-bit Windows build, because game/plugin process is 32-bit.
 
@@ -54,7 +55,9 @@ Installer does this automatically:
 - finds DARK Steam install by checking `DarkApp.exe`, `Localization_Common/`, and `VisionEnginePlugin.vPlugin`;
 - asks which install to use if multiple copies are found;
 - downloads tested 32-bit Windows FFmpeg build;
-- puts FFmpeg at `Dark/ffmpeg/bin/ffmpeg.exe`;
+- puts FFmpeg/FFplay at `Dark/ffmpeg/bin/`;
+- extracts `.wav` audio beside each cutscene `.wmv`, except silent `intro.wmv`;
+- replaces each processed `.wmv` with a muted copy and keeps original backup beside it;
 - renames original plugin to `VideoEnginePlugin.orig.vPlugin`;
 - installs proxy as `VideoEnginePlugin.vPlugin`.
 
@@ -72,10 +75,11 @@ DARK_GAME_DIR="/path/to/SteamLibrary/steamapps/common/Dark" sh dark-render-re/in
    cd "/path/to/SteamLibrary/steamapps/common/Dark"
    ```
 
-2. Put 32-bit Windows FFmpeg here:
+2. Put 32-bit Windows FFmpeg/FFplay here:
 
    ```text
    Dark/ffmpeg/bin/ffmpeg.exe
+   Dark/ffmpeg/bin/ffplay.exe
    ```
 
    Tested layout:
@@ -85,6 +89,12 @@ DARK_GAME_DIR="/path/to/SteamLibrary/steamapps/common/Dark" sh dark-render-re/in
      ffmpeg/
        bin/
          ffmpeg.exe
+         ffplay.exe
+    Localization_Common/
+      Video/
+        ru/
+          comic_even_intro.wmv
+          comic_even_intro.wav
    ```
 
 3. Backup original plugin once:
@@ -113,6 +123,7 @@ Script expects:
 
 - `dark-render-re/dist/VideoEnginePlugin.vPlugin` exists;
 - original plugin is either `VideoEnginePlugin.vPlugin` or already renamed to `VideoEnginePlugin.orig.vPlugin`.
+- native Linux `ffmpeg` exists for preparing `.wav` audio and muted `.wmv` files.
 
 Game root detection requires these files:
 
@@ -135,6 +146,14 @@ Linux build deps:
 - Wine i386 import libs:
   - `/usr/lib/wine/i386-windows/libkernel32.a`
   - `/usr/lib/wine/i386-windows/libuser32.a`
+
+Linux install deps:
+
+- `find`
+- `ffmpeg`
+- `awk`
+- `curl` or `wget`
+- `unzip`, `bsdtar`, or `7z`
 
 Build:
 

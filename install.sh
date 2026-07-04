@@ -124,10 +124,22 @@ extract_zip() {
   fi
 }
 
+audio_is_silent() {
+  file="$1"
+  max_volume=$(
+    ffmpeg -hide_banner -i "$file" -af volumedetect -f null - 2>&1 |
+      sed -n 's/.*max_volume: \([-0-9.]*\) dB.*/\1/p' |
+      tail -n 1
+  )
+  [ "$max_volume" ] || return 1
+  awk "BEGIN { exit !($max_volume <= -80.0) }"
+}
+
 install_ffmpeg() {
   game_dir="$1"
   ffmpeg_exe="$game_dir/ffmpeg/bin/ffmpeg.exe"
-  [ -f "$ffmpeg_exe" ] && return
+  ffplay_exe="$game_dir/ffmpeg/bin/ffplay.exe"
+  [ -f "$ffmpeg_exe" ] && [ -f "$ffplay_exe" ] && return
 
   tmp="${TMPDIR:-/tmp}/dark-render-re-ffmpeg.$$"
   zip="$tmp/ffmpeg.zip"
@@ -137,12 +149,64 @@ install_ffmpeg() {
   download_file "$FFMPEG_URL" "$zip"
   extract_zip "$zip" "$tmp/extract"
 
-  found=$(find "$tmp/extract" -type f -name ffmpeg.exe | head -n 1)
-  [ "$found" ] || die "ffmpeg.exe not found in archive"
+  found_ffmpeg=$(find "$tmp/extract" -type f -name ffmpeg.exe | head -n 1)
+  found_ffplay=$(find "$tmp/extract" -type f -name ffplay.exe | head -n 1)
+  [ "$found_ffmpeg" ] || die "ffmpeg.exe not found in archive"
+  [ "$found_ffplay" ] || die "ffplay.exe not found in archive"
 
   mkdir -p "$game_dir/ffmpeg/bin"
-  cp "$found" "$ffmpeg_exe"
+  cp "$found_ffmpeg" "$ffmpeg_exe"
+  cp "$found_ffplay" "$ffplay_exe"
   rm -rf "$tmp"
+}
+
+install_audio_bypass_assets() {
+  game_dir="$1"
+  need_cmd ffmpeg
+  need_cmd awk
+
+  find "$game_dir/Localization_Common/Video" -type f -name '*.wmv' | while IFS= read -r video; do
+    case "$(basename "$video")" in
+      intro.wmv) continue ;;
+    esac
+
+    backup="$video.dark-render-re-original"
+    wav="${video%.*}.wav"
+    wav_tmp="$wav.dark-render-re.tmp"
+    tmp="$video.dark-render-re-muted.tmp"
+
+    if [ ! -f "$backup" ]; then
+      cp "$video" "$backup"
+      echo "Original saved: ${video#$game_dir/}"
+    fi
+
+    if ! ffmpeg -y -hide_banner -loglevel error \
+      -i "$backup" \
+      -map 0:a:0 -vn \
+      -acodec pcm_s16le -ar 44100 -ac 2 \
+      -f wav \
+      "$wav_tmp"; then
+      rm -f "$wav_tmp"
+      echo "No audio stream, skipped: ${video#$game_dir/}"
+      continue
+    fi
+
+    if audio_is_silent "$wav_tmp"; then
+      rm -f "$wav_tmp"
+      die "audio extracted from backup is silent: ${backup#$game_dir/}. Restore original game video, then rerun installer."
+    fi
+
+    mv "$wav_tmp" "$wav"
+
+    ffmpeg -y -hide_banner -loglevel error \
+      -i "$backup" \
+      -map 0:a:0 -map 0:v:0 \
+      -af volume=0 \
+      -c:a wmav2 -b:a 128k -ar 44100 -ac 2 \
+      -c:v copy -f asf \
+      "$tmp"
+    mv "$tmp" "$video"
+  done
 }
 
 install_proxy() {
@@ -163,6 +227,7 @@ GAME_DIR=$(find_dark_dir)
 
 echo "DARK root: $GAME_DIR"
 install_ffmpeg "$GAME_DIR"
+install_audio_bypass_assets "$GAME_DIR"
 install_proxy "$GAME_DIR"
 
 echo "Installed dark-render-re. Start game from Steam."

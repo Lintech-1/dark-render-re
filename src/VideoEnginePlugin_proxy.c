@@ -68,6 +68,7 @@ __declspec(dllimport) HANDLE WINAPI CreateThread(void *, DWORD, DWORD (WINAPI *)
 __declspec(dllimport) BOOL WINAPI SetPriorityClass(HANDLE, DWORD);
 __declspec(dllimport) BOOL WINAPI SetThreadPriority(HANDLE, int);
 __declspec(dllimport) HANDLE WINAPI GetCurrentThread(void);
+__declspec(dllimport) void WINAPI Sleep(DWORD);
 __declspec(dllimport) DWORD WINAPI GetLastError(void);
 __declspec(dllimport) void *WINAPI GetProcessHeap(void);
 __declspec(dllimport) void *WINAPI HeapAlloc(void *, DWORD, unsigned long);
@@ -77,6 +78,7 @@ __declspec(dllimport) DWORD WINAPI GetTickCount(void);
 
 static HMODULE g_orig;
 static char g_last_video[520];
+static char g_audio_path[520];
 static void *g_tex;
 static int g_tex_w;
 static int g_tex_h;
@@ -84,6 +86,11 @@ static HANDLE g_ffmpeg_process;
 static HANDLE g_ffmpeg_thread;
 static HANDLE g_ffmpeg_stdout;
 static HANDLE g_ffmpeg_stdin;
+static HANDLE g_audio_process;
+static int g_audio_bypass_started;
+static int g_audio_bypass_done;
+static int g_audio_bypass_video;
+static unsigned long g_audio_bypass_start_tick;
 static int g_ffmpeg_prepared;
 static int g_ffmpeg_reader_started;
 static unsigned char *g_frame;
@@ -101,11 +108,13 @@ static unsigned char *g_rendering_suspended;
 static unsigned long g_update_calls;
 static unsigned long g_update_ok;
 
+#define GENERIC_READ 0x80000000u
 #define GENERIC_WRITE 0x40000000u
 #define FILE_APPEND_DATA 0x00000004u
 #define FILE_SHARE_READ 0x00000001u
 #define FILE_SHARE_WRITE 0x00000002u
 #define CREATE_ALWAYS 2u
+#define OPEN_EXISTING 3u
 #define OPEN_ALWAYS 4u
 #define CREATE_NO_WINDOW 0x08000000u
 #define IDLE_PRIORITY_CLASS 0x00000040u
@@ -118,14 +127,16 @@ static unsigned long g_update_ok;
 
 typedef void *(THISCALL *CtorFn)(void *);
 typedef void (THISCALL *VoidFn)(void *);
-typedef BOOL (THISCALL *BoolFn)(void *);
-typedef BOOL (THISCALL *InitVideoFn)(void *, char *, float);
-typedef BOOL (THISCALL *SetVideoTargetFn)(void *, void *, int, int, int, int);
+typedef unsigned char (THISCALL *BoolFn)(void *);
+typedef unsigned char (THISCALL *InitVideoFn)(void *, char *, float);
+typedef unsigned char (THISCALL *SetVideoTargetFn)(void *, void *, int, int, int, int);
 typedef void (THISCALL *GetVideoDimensionsFn)(void *, int *, int *);
 typedef float (THISCALL *FloatFn)(void *);
 typedef void *(__stdcall *CreateObjectFn)(void);
 typedef void *(__stdcall *GetClassTypeIdFn)(void);
 typedef void *(__stdcall *GetEnginePluginFn)(void);
+
+static void strcopy(char *dst, int cap, const char *src);
 
 static int streq_suffix(const char *s, const char *suffix)
 {
@@ -140,6 +151,44 @@ static int streq_suffix(const char *s, const char *suffix)
         if (b >= 'A' && b <= 'Z') b += 32;
         if (a != b) return 0;
     }
+    return 1;
+}
+
+static void audio_path_from_video(char *dst, int cap, const char *video)
+{
+    int n = 0;
+    strcopy(dst, cap, video);
+    while (dst[n]) n++;
+    if (n >= 4 && streq_suffix(dst, ".wmv")) {
+        dst[n - 3] = 'w';
+        dst[n - 2] = 'a';
+        dst[n - 1] = 'v';
+    }
+}
+
+static int should_bypass_audio(void)
+{
+    const char *name = g_last_video;
+    const char *p = g_last_video;
+    const char exact_intro[] = "intro.wmv";
+    int exact = 1;
+    int i;
+    while (*p) {
+        if (*p == '\\' || *p == '/') name = p + 1;
+        p++;
+    }
+    if (!streq_suffix(g_last_video, ".wmv")) return 0;
+    for (i = 0; exact_intro[i] || name[i]; ++i) {
+        char a = name[i];
+        char b = exact_intro[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) {
+            exact = 0;
+            break;
+        }
+    }
+    if (exact) return 0;
     return 1;
 }
 
@@ -275,7 +324,7 @@ static void *sym(const char *name)
     return m ? GetProcAddress(m, name) : 0;
 }
 
-typedef BOOL (THISCALL *UpdateRectFn)(void *, int, int, int, int, int, int, const void *, int, int);
+typedef unsigned char (THISCALL *UpdateRectFn)(void *, int, int, int, int, int, int, const void *, int, int);
 
 static UpdateRectFn update_rect(void)
 {
@@ -329,8 +378,10 @@ static DWORD WINAPI ffmpeg_reader(void *unused)
     DWORD got;
     DWORD exit_code;
     unsigned long pos;
+    unsigned long next_frame_time;
     (void)unused;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    next_frame_time = GetTickCount();
     while (!g_stop_worker && g_ffmpeg_stdout && g_frame && g_frame_size) {
         pos = 0;
         while (pos < g_frame_size && !g_stop_worker) {
@@ -357,6 +408,10 @@ static DWORD WINAPI ffmpeg_reader(void *unused)
         if (pos == g_frame_size) {
             g_frame_ready = 1;
             g_frames_read++;
+            next_frame_time += 40u;
+            while (!g_stop_worker && (long)(next_frame_time - GetTickCount()) > 0) {
+                Sleep(1);
+            }
         }
     }
     log_line("reader exit");
@@ -456,6 +511,78 @@ static void start_ffmpeg_reader(void)
     log_hex("CreateThread handle=", (unsigned long)g_ffmpeg_thread);
 }
 
+static void stop_audio_bypass(void)
+{
+    if (g_audio_process) {
+        TerminateProcess(g_audio_process, 0);
+        CloseHandle(g_audio_process);
+        g_audio_process = 0;
+    }
+    g_audio_bypass_started = 0;
+    g_audio_bypass_done = 0;
+    g_audio_bypass_video = 0;
+    g_audio_bypass_start_tick = 0;
+}
+
+static int audio_bypass_finished(void)
+{
+    DWORD exit_code;
+    if (!g_audio_bypass_started) return 0;
+    if (g_audio_bypass_done) return 1;
+    if (!g_audio_process) return 0;
+    exit_code = 0;
+    if (!GetExitCodeProcess(g_audio_process, &exit_code)) return 0;
+    if (exit_code == 259u) return 0;
+    CloseHandle(g_audio_process);
+    g_audio_process = 0;
+    g_audio_bypass_done = 1;
+    log_hex("ffplay exit=", exit_code);
+    return 1;
+}
+
+static void start_audio_bypass(void)
+{
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    char cmd[900];
+    HANDLE nul = 0;
+    HANDLE err_file = 0;
+
+    if (!g_audio_bypass_video || g_audio_process) return;
+
+    nul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS, 0, 0);
+#if ENABLE_DARK_RENDER_RE_LOGS
+    err_file = CreateFileA("dark_audio_ffplay.log", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, CREATE_ALWAYS, 0, 0);
+    if (err_file == INVALID_HANDLE_VALUE) err_file = 0;
+#endif
+    zero_mem(&si, sizeof(si));
+    zero_mem(&pi, sizeof(pi));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = 0;
+    si.hStdOutput = nul;
+    si.hStdError = err_file ? err_file : nul;
+
+    strcopy(cmd, sizeof(cmd), "\"ffmpeg\\bin\\ffplay.exe\" -nodisp -autoexit -loglevel quiet \"");
+    strappend(cmd, sizeof(cmd), g_audio_path);
+    strappend(cmd, sizeof(cmd), "\"");
+    log_line(cmd);
+    if (!CreateProcessA(0, cmd, 0, 0, TRUE, CREATE_NO_WINDOW, 0, 0, &si, &pi)) {
+        log_hex("CreateProcess ffplay failed err=", GetLastError());
+        if (nul) CloseHandle(nul);
+        if (err_file) CloseHandle(err_file);
+        return;
+    }
+    log_line("CreateProcess ffplay OK");
+    if (nul) CloseHandle(nul);
+    if (err_file) CloseHandle(err_file);
+    g_audio_process = pi.hProcess;
+    g_audio_bypass_started = 1;
+    g_audio_bypass_done = 0;
+    g_audio_bypass_start_tick = GetTickCount();
+    CloseHandle(pi.hThread);
+}
+
 static void prepare_ffmpeg(void)
 {
     SECURITY_ATTRIBUTES sa;
@@ -518,13 +645,19 @@ static void prepare_ffmpeg(void)
     si.hStdOutput = write_pipe;
     si.hStdError = err_file;
 
-    strcopy(cmd, sizeof(cmd), "\"ffmpeg\\bin\\ffmpeg.exe\" -hide_banner -loglevel error -nostdin -threads 1 -filter_threads 1 -filter_complex_threads 1 -re -i \"");
+    strcopy(cmd, sizeof(cmd), "\"ffmpeg\\bin\\ffmpeg.exe\" -hide_banner -loglevel error -nostdin -threads 1 -filter_threads 1 -filter_complex_threads 1 -i \"");
     strappend(cmd, sizeof(cmd), g_last_video);
-    strappend(cmd, sizeof(cmd), "\" -an -vf scale=");
-    append_i32(cmd, sizeof(cmd), g_tex_w);
-    strappend(cmd, sizeof(cmd), ":");
-    append_i32(cmd, sizeof(cmd), g_tex_h);
-    strappend(cmd, sizeof(cmd), ":flags=lanczos,fps=25 -pix_fmt bgra -f rawvideo pipe:1");
+    strappend(cmd, sizeof(cmd), "\" -map 0:v:0 -an -sn -dn -vf ");
+    if (g_tex_w == 1280 && g_tex_h == 720) {
+        strappend(cmd, sizeof(cmd), "fps=25");
+    } else {
+        strappend(cmd, sizeof(cmd), "scale=");
+        append_i32(cmd, sizeof(cmd), g_tex_w);
+        strappend(cmd, sizeof(cmd), ":");
+        append_i32(cmd, sizeof(cmd), g_tex_h);
+        strappend(cmd, sizeof(cmd), ":flags=fast_bilinear,fps=25");
+    }
+    strappend(cmd, sizeof(cmd), " -pix_fmt bgra -f rawvideo pipe:1");
     log_line(cmd);
 
     if (!CreateProcessA(0, cmd, 0, 0, TRUE, CREATE_NO_WINDOW, 0, 0, &si, &pi)) {
@@ -570,6 +703,7 @@ void *WINAPI Proxy_CreateObject(void)
 void THISCALL Proxy_DeInit(void *self)
 {
     VoidFn f = (VoidFn)sym("?DeInit@VideoEngineRenderer@@QAEXXZ");
+    stop_audio_bypass();
     stop_ffmpeg();
     if (f) f(self);
 }
@@ -577,7 +711,24 @@ void THISCALL Proxy_DeInit(void *self)
 BOOL THISCALL Proxy_FinishedPlaying(void *self)
 {
     BoolFn f = (BoolFn)sym("?FinishedPlaying@VideoEngineRenderer@@QAE_NXZ");
-    BOOL done = f ? f(self) : TRUE;
+    BOOL done = (f && f(self)) ? TRUE : FALSE;
+    if (g_audio_bypass_video && g_audio_bypass_started && g_audio_bypass_start_tick) {
+        unsigned long elapsed = GetTickCount() - g_audio_bypass_start_tick;
+        int audio_done = audio_bypass_finished();
+        if (!done && elapsed > 1000u && audio_done) {
+            log_line("audio bypass ended: force FinishedPlaying");
+            {
+                VoidFn stop = (VoidFn)sym("?Stop@VideoEngineRenderer@@QAEXXZ");
+                if (stop) {
+                    log_line("audio bypass: original Stop before finish");
+                    stop(self);
+                }
+            }
+            stop_audio_bypass();
+            stop_ffmpeg();
+            return TRUE;
+        }
+    }
     return done;
 }
 
@@ -621,18 +772,23 @@ void THISCALL Proxy_GetVideoDimensions(void *self, int *w, int *h)
 BOOL THISCALL Proxy_InitVideo(void *self, char *path, float volume)
 {
     InitVideoFn f = (InitVideoFn)sym("?InitVideo@VideoEngineRenderer@@QAE_NPADM@Z");
-    BOOL ok;
+    g_audio_bypass_done = 0;
+    g_audio_bypass_started = 0;
+    g_audio_bypass_video = 0;
+    g_audio_bypass_start_tick = 0;
     strcopy(g_last_video, sizeof(g_last_video), path);
     if (path && !streq_suffix(path, ".wmv")) strappend(g_last_video, sizeof(g_last_video), ".wmv");
+    audio_path_from_video(g_audio_path, sizeof(g_audio_path), g_last_video);
+    g_audio_bypass_video = should_bypass_audio();
     log_line("InitVideo");
     log_line(g_last_video);
-    return f ? f(self, path, volume) : FALSE;
+    return (f && f(self, path, volume)) ? TRUE : FALSE;
 }
 
 BOOL THISCALL Proxy_IsPlaying(void *self)
 {
     BoolFn f = (BoolFn)sym("?IsPlaying@VideoEngineRenderer@@QAE_NXZ");
-    return f ? f(self) : FALSE;
+    return (f && f(self)) ? TRUE : FALSE;
 }
 
 BOOL THISCALL Proxy_SetVideoTarget(void *self, void *tex, int left, int top, int right, int bottom)
@@ -649,7 +805,7 @@ BOOL THISCALL Proxy_SetVideoTarget(void *self, void *tex, int left, int top, int
     log_num("w=", (unsigned long)g_tex_w);
     log_num("h=", (unsigned long)g_tex_h);
     {
-        BOOL ok = f ? f(self, tex, left, top, right, bottom) : FALSE;
+        BOOL ok = (f && f(self, tex, left, top, right, bottom)) ? TRUE : FALSE;
         prepare_ffmpeg();
         return ok;
     }
@@ -661,12 +817,14 @@ void THISCALL Proxy_StartVideo(void *self)
     log_line("StartVideo");
     prepare_ffmpeg();
     start_ffmpeg_reader();
+    start_audio_bypass();
     if (f) f(self);
 }
 
 void THISCALL Proxy_Stop(void *self)
 {
     VoidFn f = (VoidFn)sym("?Stop@VideoEngineRenderer@@QAEXXZ");
+    stop_audio_bypass();
     stop_ffmpeg();
     if (f) f(self);
 }
@@ -682,7 +840,7 @@ BOOL THISCALL Proxy_UpdateTexture(void *self)
     if (g_tex && g_frame && g_frame_ready && g_tex_w > 0 && g_tex_h > 0) {
         UpdateRectFn fn = update_rect();
         if (fn) {
-            BOOL ok = fn(g_tex, 0, 0, 0, 0, 0, -1, g_frame, 1, 0);
+            BOOL ok = fn(g_tex, 0, 0, 0, 0, 0, -1, g_frame, 1, 0) ? TRUE : FALSE;
             if (!ok) {
                 g_update_failures++;
                 log_num("UpdateRect failed=", g_update_failures);
@@ -716,6 +874,7 @@ void *WINAPI Proxy_GetEnginePlugin_VideoEnginePlugin(void)
 BOOL WINAPI DllMain(HMODULE h, DWORD reason, LPVOID reserved)
 {
     if (reason == 0) {
+        stop_audio_bypass();
         stop_ffmpeg();
         if (g_orig) {
             FreeLibrary(g_orig);
