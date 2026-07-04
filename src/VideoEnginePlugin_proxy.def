@@ -1,0 +1,22 @@
+LIBRARY VideoEnginePlugin.vPlugin
+EXPORTS
+  "??0VideoEngineRenderer@@QAE@XZ"=Proxy_ctor @1
+  "??1VideoEngineRenderer@@UAE@XZ"=Proxy_dtor @2
+  "?CreateObject@VideoEngineRenderer@@SAPAVVTypedObject@@XZ"=Proxy_CreateObject @3
+  "?DeInit@VideoEngineRenderer@@QAEXXZ"=Proxy_DeInit @4
+  "?FinishedPlaying@VideoEngineRenderer@@QAE_NXZ"=Proxy_FinishedPlaying @5
+  "?GetClassTypeId@VideoEngineRenderer@@SAPAUVType@@XZ"=Proxy_GetClassTypeId @6
+  "?GetCurrentPosition@VideoEngineRenderer@@QAEMXZ"=Proxy_GetCurrentPosition @7
+  "?GetTickCount@VideoEngineRenderer@@QAEMXZ"=Proxy_GetTickCount @8
+  "?GetTotalTime@VideoEngineRenderer@@QAEMXZ"=Proxy_GetTotalTime @9
+  "?GetTypeId@VideoEngineRenderer@@UBEPAUVType@@XZ"=Proxy_GetTypeId @10
+  "?GetVideoDimensions@VideoEngineRenderer@@QAEXAAH0@Z"=Proxy_GetVideoDimensions @11
+  "?InitVideo@VideoEngineRenderer@@QAE_NPADM@Z"=Proxy_InitVideo @12
+  "?IsPlaying@VideoEngineRenderer@@QAE_NXZ"=Proxy_IsPlaying @13
+  "?SetVideoTarget@VideoEngineRenderer@@QAE_NPAVVTextureObject@@UtagRECT@@@Z"=Proxy_SetVideoTarget @14
+  "?StartVideo@VideoEngineRenderer@@QAEXXZ"=Proxy_StartVideo @15
+  "?Stop@VideoEngineRenderer@@QAEXXZ"=Proxy_Stop @16
+  "?UpdateTexture@VideoEngineRenderer@@QAE_NXZ"=Proxy_UpdateTexture @17
+  "?classVideoEngineRenderer@VideoEngineRenderer@@2UVType@@A"=classVideoEngineRenderer @18 DATA
+  GetEnginePlugin=Proxy_GetEnginePlugin @19
+  GetEnginePlugin_VideoEnginePlugin=Proxy_GetEnginePlugin_VideoEnginePlugin @20
