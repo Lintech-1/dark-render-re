@@ -23,7 +23,9 @@ Game links:
 
 This project uses [FFmpeg](https://ffmpeg.org/) for WMV decoding, with a tested 32-bit Windows build from [FFmpeg-Builds-Win32](https://github.com/defisym/FFmpeg-Builds-Win32). Runtime testing is done on [Proton-GE](https://github.com/GloriousEggroll/proton-ge-custom), using Wine/Proton compatibility layers from the [Wine](https://www.winehq.org/) ecosystem.
 
-The proxy is built with [LLVM/Clang](https://clang.llvm.org/) and Wine i386 import libraries. Rendering integration targets DARK's original `VideoEnginePlugin.vPlugin`, `VisionEnginePlugin.vPlugin`, and `vBase100.dll` interfaces; game files are not redistributed by this project.
+The proxy is built with [LLVM/Clang](https://clang.llvm.org/) and Wine i386 import libraries. Rendering integration targets DARK's original `VideoEnginePlugin.vPlugin`, `VisionEnginePlugin.vPlugin`, and `vBase100.dll` interfaces.
+
+This repository contains proxy source code and an optional prebuilt proxy binary. It does not contain original DARK game files.
 
 ## Current Status
 
@@ -157,7 +159,7 @@ LOGS=1 sh build_proxy.sh
 
 - `src/VideoEnginePlugin_proxy.c` - proxy implementation.
 - `src/VideoEnginePlugin_proxy.def` - exported original plugin symbols.
-- `dist/VideoEnginePlugin.vPlugin` - ready-to-use 32-bit proxy DLL.
+- `dist/VideoEnginePlugin.vPlugin` - ready-to-use 32-bit proxy DLL built by this project, not the original game plugin.
 - `install.sh` - install/update helper for game root.
 - `build_proxy.sh` - local build script.
 
@@ -174,7 +176,9 @@ These are debug logs. Safe to delete.
 
 ## Credits
 
-DARK belongs to its owners. FFmpeg belongs to FFmpeg project/build maintainers. This repo contains only proxy code and ready proxy binary, not game files.
+DARK belongs to its owners. FFmpeg belongs to FFmpeg project/build maintainers. Original DARK game files are not redistributed.
+
+The prebuilt `dist/VideoEnginePlugin.vPlugin` is this project's proxy binary, not the original DARK `VideoEnginePlugin.vPlugin`.
 
 ## License
 
